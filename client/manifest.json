@@ -1,0 +1,15 @@
+{
+    "name": "OpenMessage Beta",
+    "short_name": "OpenMessage",
+    "start_url": "/index.html",
+    "display": "standalone",
+    "background_color": "#333",
+    "theme_color": "#333",
+    "orientation": "portrait-primary",
+    "icons": [
+      {
+        "src": "ico.png",
+        "type": "image/png", "sizes": "512x512"
+      }
+    ]
+  }
