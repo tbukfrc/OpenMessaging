@@ -1,13 +1,10 @@
 import socketio
-from Crypto.PublicKey import RSA
 import pickle
 import asyncio
-import psutil
 import uvicorn
 import datetime
 import os
 import bleach
-global sid_ratelimit
 import uuid
 import base64
 import json
@@ -16,57 +13,69 @@ from profanity_check import predict_prob
 import marko
 import pyotp
 import qrcode
+import redis
+import bcrypt
 
-# WARNING: THE FOLLOWING CODE IS AN ABSOLUTE DISASTER
-# AND COULD LIKELY BE CLASSIFIED AS A COGNITOHAZARD
-# CONTINUE AT YOUR OWN RISK.
+with open('config.json', 'r') as config:
+  data = json.loads(config.read())
+  ADMIN_LIST = data['admins']
+  REDIS_PORT = data['redis_port']
+  SERVER_PORT = data['server_port']
+  ADMIN_UPLOAD_LIMIT = data['admin_upload_limit']
+  USER_UPLOAD_LIMIT = data['user_upload_limit']
+  MESSAGE_CHARACTER_LIMIT = data['character_limit']
+  CDN_DOMAIN = data['cdn_domain']
 
-# Random variables initialized with (meaningless?) values
-# I'm fairly certain most of these aren't used, but they're
-# so old they are seperated from all the random variables ~100
-# lines down, so I'm worried they are used somewhere and will break
-# something important. Modify at your own risk, I suppose.
-updateVer = '2.0.2'
+r = redis.Redis(host='localhost', port=REDIS_PORT, db=0)
+def save(data, location: str) -> None:
+  r.set(location, json.dumps(data))
 
-latest_changelog = '1.0.0'
+def load(location: str):
+  if r.get(location) == None:
+    r.set(location, json.dumps({}))
+    return json.loads(r.get(location))
+  else:
+    return json.loads(r.get(location))
 
-changelogs = []
+def load_room(room: str):
+  room = load(load('rooms')[room])
+  return room
 
+if r.get('userIndex') == None:
+  save({}, 'userIndex')
+if r.get('rooms') == None:
+  save({'main': 'roommain'}, 'rooms')
+if r.get('roommain') == None:
+  save({'owner': '[SYSTEM]', 'protected': False, 'password': None, 'messages': []}, 'roommain')
+if r.get('banned') == None:
+  save({}, 'banned')
+
+# Code newly refactored and commented on 1/10/2023
+
+# Don't change this variable, it's just a default value. The current version will be automatically
+# determined by the latest changelog filename.
+updateVer = '0.0.0.0'
+# This list is used to store temporary keys to identify a user when changing their password (2FA)
 temp_pass_keys = []
-
+# This list is used in ratelimiting to store the # of messages a user has sent recently
+global sid_ratelimit
 sid_ratelimit = []
-
-adminList = ['admin', 'BuffMANs', 'Mythnus']
 
 active_upload_keys = {}
 
-# this completely unreadable function determines the latest changelog
-# it is magic, don't ask me how it works, It Just Works™.
+# iterate through the chnglog- files and determine the latest one based on version number
+changelogs = []
 for file in os.listdir():
   if file.startswith('chnglog'):
     changelogs.append(file)
-    if int(file.replace('.', '').split('-')[1]) > int(latest_changelog.replace('.', '')):
-      latest_changelog = file.split('-')[1]
-      updateVer = latest_changelog
+    if int(file.replace('.', '').split('-')[1]) > int(updateVer.replace('.', '')):
+      updateVer = file.split('-')[1]
 
 # opens the latest changelog and saves it in memory.
 if changelogs:
-  with open('chnglog-' + latest_changelog, 'r') as changes:
+  with open('chnglog-' + updateVer, 'r') as changes:
     changelog = changes.read()
   changes.close()
-
-# this is unused code, back when OpenMessage was just a concept, and was
-# supposed to be used for encrypted message transmission. The lack of a good
-# cryptography library for JavaScript killed this dream in an instant.
-# This function is left here as a memorial.
-def generate_rsa_key_pair():
-  key_pair = RSA.generate(4096)
-  private_key_pem = key_pair.exportKey('PEM')
-  
-  public_key = key_pair.publickey()
-  public_key_pem = public_key.exportKey('PEM')
-  
-  return (public_key_pem, private_key_pem)
 
 # create a Socket.IO server
 sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins='*')
@@ -74,52 +83,19 @@ sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins='*')
 # wrap with a ASGI application.
 app = socketio.ASGIApp(sio)
 
-# initialize variables
-# i have no idea which variables are actually used,
-# if any at all, but I'm too afraid to touch them.
+# initialize required variables
+# validSids keeps track of logged-in users
+# alphanumeric_list is for checking if inputs contain alphanumeric characters
 global messages
-userStore = {}
-bannedUsers = {}
 validSids = {}
-messages = {}
 secretStore = {}
-alphanumeric = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890_-'
-alphanumeric_list = list(alphanumeric)
-
-# the following code checks if the stored python dicts exist, and catches
-# the error if they don't. This is because I didn't use Redis or SQL to store data,
-# which I should probably do.
-try:
-  with open('user.store', 'rb') as userStoreLoad:
-    userStore = pickle.load(userStoreLoad)
-except(FileNotFoundError):
-  print('user.store does not exist')
-
-try:
-  with open('message.store', 'rb') as messageStoreLoad:
-    messages = pickle.load(messageStoreLoad)
-    if type(messages) is list:
-      print('Outdated message store! Upgrading to room-based store.')
-      msgtmp = messages
-      messages = {}
-      messages['main'] = msgtmp
-      del msgtmp
-      print('Done!')
-except(FileNotFoundError):
-  print('message.store does not exist, creating new message store')
-  messages['main'] = []
+alphanumeric_list = list('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890_-')
 
 try:
   with open('secret.store', 'rb') as secretStoreLoad:
     secretStore = pickle.load(secretStoreLoad)
 except(FileNotFoundError):
   print('secret.store does not exist')
-
-try:
-  with open('banned.store', 'rb') as bannedStoreLoad:
-    bannedUsers = pickle.load(bannedStoreLoad)
-except(FileNotFoundError):
-  print('banned.store does not exist')
 
 # This is a client endpoint that requests an UploadKey, which is a
 # uuid4 key that is used on the server-side to seperate file uploads
@@ -128,30 +104,22 @@ except(FileNotFoundError):
 async def requestUploadKey(sid):
   # For future reference, every time you see this, it is checking if the user's SID#
   # is a registered SID
-  for sidNum in validSids:
-    if sidNum == sid:
-      break
-  else:
-    await sio.emit('statusCallback', {'error': 'invalidSidError', 'description': 'Your sid# is not validated with a registered or active account.'}, room=sid)
+  check = await validate_sid(sid)
+  if not check:
     return
-
   upload_key = str(uuid.uuid4())
   active_upload_keys[upload_key] = ''
   await sio.emit('uploadKeyCallback', upload_key, room=sid)
 
 # This is the code that handles async data uploads via
 # UploadKeys. If you ever have to work on this code, I'm sorry.
-# This code is a complete mess, even I don't understand it.
-# All I know is that It Just Works™.
+# This code is a complete mess, but I couldn't come up with a better solution.
+# Unless you're adding custom datatypes, however, you probably won't have to deal with this.
 @sio.event
 async def dataSend(sid, data):
   room = await sio.get_session(sid)
-  for sidNum in validSids:
-    if sidNum == sid:
-      username = validSids[sid]
-      break
-  else:
-    await sio.emit('statusCallback', {'error': 'invalidSidError', 'description': 'Your sid# is not validated with a registered or active account.'}, room=sid)
+  username = await validate_sid(sid)
+  if not username:
     return
   if data['id'] in active_upload_keys:
     if data['part'] == 'transferComplete':
@@ -191,48 +159,37 @@ async def dataSend(sid, data):
     else:  
       active_upload_keys[data['id']] += data['part']
       size = (len(active_upload_keys[data['id']]) * (3/4)) - 2
-      if username in adminList:
-        if size/1000000 > 101:
+      if username in ADMIN_LIST:
+        if size/1000000 > ADMIN_UPLOAD_LIMIT:
           await sio.emit('statusCallback', {'error': 'fileTooLarge', 'description': 'Maximum file size is 100MB.'}, room=sid)
           active_upload_keys[data['id']] = ''
           return
-      elif size/1000000 > 51:
+      elif size/1000000 > USER_UPLOAD_LIMIT:
         await sio.emit('statusCallback', {'error': 'fileTooLarge', 'description': 'Maximum file size is 50MB.'}, room=sid)
         active_upload_keys[data['id']] = ''
         return
 
-# This code initializes a client. If it looks like a lot of
-# unnecessary functions and messages, that's because it is.
-# This was my first time using Socket.IO, the code here is horrible.
+# This code sends the new room data to all the clients. It's pretty self-explanitory.
+async def sendNewRooms(): 
+  rooms = []
+  for room in load('rooms'):
+    rooms.append({'name': room, 'protected': load_room(room)['protected']})
+  await sio.emit('recieveRooms', rooms)
+
+# This code initializes a client. It sets up their sid# in the ratelimiter,
+# enter's them into the main room, and sends the room info to them.
 @sio.event
 async def connect(sid, environ, auth):
   global sid_ratelimit
-  rooms = []
-  for room in messages:
-    if room == 'main':
-      rooms.append({'name': 'main', 'protected': False})
-    else:
-      rooms.append({'name': room, 'protected': messages[room][0]['room_meta']['protected']})
   sid_ratelimit.append({'sid': sid, 'msgs': 0})
   sio.enter_room(sid, 'main')
   await sio.save_session(sid, {'room': 'main'})
-  await sio.emit('recieveRooms', rooms)
+  await sendNewRooms()
   #await sio.emit('statusCallback', {'error': 'Canary Build', 'description': 'This is the canary/testing version of OpenMessage. New features are actively developed and tested here. There may be severe bugs.'}, room=sid)
 
-# This code sends the new room data to all the clients. It's pretty self-explanitory.
-async def sendNewRooms():
-  rooms = []
-  for room in messages:
-    if room == 'main':
-      rooms.append({'name': 'main', 'protected': False})
-    else:
-      rooms.append({'name': room, 'protected': messages[room][0]['room_meta']['protected']})
-  
-  await sio.emit('recieveRooms', rooms)
-
 # This code is some async code that lowers the current sent messages
-# by one every two seconds. I didn't think async functions worked like this
-# but apparently they do, so I'm not changing it.
+# by one every two seconds. You can modify the sleep time to increase or decrease
+# the strictness of the ratelimiter.
 async def ratelimiter():
   while True:
     for sid in sid_ratelimit:
@@ -240,23 +197,15 @@ async def ratelimiter():
         sid['msgs'] -= 1
     await asyncio.sleep(2)
 
-# This just removes a users SID# from the valid SID#s.
+# This just removes a users SID# from the valid SID#s when they disconnect.
 @sio.event
 def disconnect(sid):
-  for sidNum in validSids:
-    if sidNum == sid:
-      del validSids[sid]
-      break
+  if sid in validSids:
+    del validSids[sid]
 
-# currently unused code, would popup a warning when someone used Safari iOS (site doesn't work
-# due to Apple not following JavaScript standards). Unfortunately, Apple decided it would
-# be great for Safari to pretend it was a chromium browser on iOS, and for it to pretend
-# it was desktop Safari on iPadOS, so there's no real way to tell what device it is.
-#
-# I have given up on supporting Apple users, Safari is too annoying (and expensive) to debug for.
+# This function warns people who are using Safari iOS, because OpenMessage doesn't fully work on Safari iOS.
 @sio.event
 async def browserSafari(sid, safari):
-  print(safari)
   if safari:
     await sio.emit('statusCallback', {'error': 'Browser Error', 'description': 'This web app runs poorly on Safari. It is recommended to a Chromium-based browser, or Firefox.'}, room=sid)
 
@@ -268,62 +217,66 @@ async def versionNum(sid, version):
     await sio.emit('statusCallback', {'changelog': updateVer, 'description': changelog}, room=sid)
 
 # Client requests this endpoint to recieve message history for their current channel.
-# Unfortunately, my code is bad and returns the entire message history,
-# so long chats could break this.
-
-# NOTE TO SELF: IMPLEMENT INFINITE-SCROLLING SO CLIENTS DON'T NEED INFINITE BANDWIDTH.
-
+# Unfortunately, this currently returns the entire message history of the room, so long chats could break this.
+# In the future, I plan to implement infinite-scrolling and loading.
 @sio.event
 async def requestUpdate(sid):
   room = await sio.get_session(sid)
   await getHistory(sid, room['room'])
 
-# This is some of the only good code you'll find around these parts.
-# This is simple, and concise, it just checks if you wrote a message,
-# and updates it in the DB. Plain and simple.
+async def validate_sid(sidNum):
+  if sidNum in validSids:
+    return validSids[sidNum]
+  else:
+    await sio.emit('statusCallback', {'error': 'failedToValidateSid', 'description': 'Failed to validate sid number with message author'}, room=sid)
+    return False
+  
+async def transfer_room(sidNum, old, new):
+  await getHistory(sidNum, new)
+  await sendNewRooms()
+  sio.leave_room(sidNum, old)
+  sio.enter_room(sidNum, new)
+  await sio.save_session(sidNum, {'room': new})
+
+# This code is (generally) simple. It gets the room you're in, finds the message with the ID you gave, checks if
+# you wrote the message, and edits it with the given content.
 @sio.event
 async def editMessage(sid, idNum, content):
   room = await sio.get_session(sid)
-  for sidNum in validSids:
-    if sidNum == sid:
-      username = validSids[sid]
-      break
-  try:
-    for message in messages[room['room']]:
-      if message['id'] == idNum:
-        if username == message['author']:
-          indx = messages[room['room']].index(message)
-          messages[room['room']][indx]['content'] = marko.convert(bleach.clean(content, tags=['p', 'b', 'i', 'a', 'u', 's']))
-          await getHistoryAll(room['room'])
-        else:
-          await sio.emit('statusCallback', {'error': 'notMessageAuthor', 'description': 'Only the message author can edit messages'}, room=sid)
-  except(UnboundLocalError):
-    await sio.emit('statusCallback', {'error': 'failedToValidateSid', 'description': 'Failed to validate sid number with message author'}, room=sid)
+  username = await validate_sid(sid)
+  if not username:
+    return
+  messages = load_room(room['room'])
+  for message in messages['messages']:
+    if message['id'] == idNum:
+      if username == message['author']:
+        indx = messages['messages'].index(message)
+        messages['messages'][indx]['content'] = marko.convert(bleach.clean(content, tags=['p', 'b', 'i', 'a', 'u', 's']))
+        save(messages, load('rooms')[room['room']])
+        await getHistoryAll(room['room'])
+      else:
+        await sio.emit('statusCallback', {'error': 'notMessageAuthor', 'description': 'Only the message author can edit messages'}, room=sid)
 
 # Same as the edit function, but this one deletes the message.
 @sio.event
 async def deleteMessage(sid, idNum):
+  username = await validate_sid(sid)
+  if not username:
+    return
   room = await sio.get_session(sid)
-  for sidNum in validSids:
-    if sidNum == sid:
-      username = validSids[sid]
-      break
-  try:
-    for message in messages[room['room']]:
-      if message['id'] == idNum:
-        if username == message['author'] or username in adminList:
-          indx = messages[room['room']].index(message)
-          messages[room['room']].pop(indx)
-          await getHistoryAll(room['room'])
-        else:
-          await sio.emit('statusCallback', {'error': 'notMessageAuthor', 'description': 'Only the message author can delete messages'}, room=sid)
-  except(UnboundLocalError):
-    await sio.emit('statusCallback', {'error': 'failedToValidateSid', 'description': 'Failed to validate sid number with message author'}, room=sid)
+  messages = load_room(room['room'])
+  for message in messages['messages']:
+    if message['id'] == idNum:
+      if username == message['author'] or username in ADMIN_LIST:
+        indx = messages['messages'].index(message)
+        messages['messages'].pop(indx)
+        save(messages, load('rooms')[room['room']])
+        await getHistoryAll(room['room'])
+      else:
+        await sio.emit('statusCallback', {'error': 'notMessageAuthor', 'description': 'Only the message author can delete messages'}, room=sid)
 
-# This is quite possibly the worst function in this project, and maybe even
-# the single worst function I have ever written.
-# It would take me a month to fully explain this mess, so I'll just get out of 
-# your way and let you edit whatever part you need to. Good luck!
+# This function parses the given message before distributing it to other clients, and
+# blocks messages that break rules. Add new commands lower down in this function.
 @sio.event
 async def recieve_msg(sid, data):
   print('message recieved. data: ' + str(data))
@@ -331,290 +284,246 @@ async def recieve_msg(sid, data):
   dataid = data['dataid']
   room = await sio.get_session(sid)
   global sid_ratelimit
-  for sidnum in sid_ratelimit:
-    if sidnum['sid'] == sid:
-      if sidnum['msgs'] > 1:
-        await sio.emit('statusCallback', {'error': 'tooManyMessages', 'description': 'You are being ratelimited.'}, room=sid)
-        return
-      else:
-        sidnum['msgs'] += 1
-        break
-  global messages
-  for sidNum in validSids:
-    if sidNum == sid:
-      username = validSids[sid]
-      break
+  if sid in sid_ratelimit:
+    if sid_ratelimit[sid]['msgs'] > 1:
+      await sio.emit('statusCallback', {'error': 'tooManyMessages', 'description': 'You are being ratelimited.'}, room=sid)
+      return
+    else:
+      sid_ratelimit[sid]['msgs'] += 1
+  username = await validate_sid(sid)
+  if not username:
+    return
   if message == '':
     await sio.emit('statusCallback', {'error': 'emptyMessage', 'description': 'Messages may not be empty.'}, room=sid)
     return
-  for name in bannedUsers:
-    if name == username:
-      await sio.emit('statusCallback', {'error': 'bannedUserError', 'description': 'Your account has been banned from participating in this chatroom.'}, room=sid)
-      return
+  if username in load('banned'):
+    await sio.emit('statusCallback', {'error': 'bannedUserError', 'description': 'Your account has been banned from participating in this chatroom.'}, room=sid)
+    return
   if predict_prob([message]) > [0.9]:
     await sio.emit('statusCallback', {'error': 'profanityFilter', 'description': 'Your message had a profanity probability greater than the threshold of 90%. As such, your message has been deleted.'}, room=sid)
     return
-  if sid in validSids:
-    if message.startswith('/clear') and username in adminList:
-      messages = []
-      messages.append({'content': 'The chat has been cleared', 'author': '[SYSTEM]', 'color': 'system'})
-      await getHistoryAll()
-    elif message.startswith('/ban') and username in adminList:
-      reason = message.split('$+')[1]
-      banned_user = message.split(' ')[1].split('$+')[0]
-
-      for messaged in messages:
-        if messaged['author'] == banned_user:
-          indx = messages.index(messaged)
-          messages[indx]['content'] = '[Removed]'
-          messages[indx]['author'] = '[Banned User]'
-      
-      for user in userStore:
-        if user == banned_user:
-          bannedUsers[user] = userStore[user]
-          with open('banned.store', 'wb') as bannedUsersSave:
-            pickle.dump(bannedUsers, bannedUsersSave)
-          del userStore[user]
-          with open('user.store', 'wb') as userStoreSave:
-            pickle.dump(userStore, userStoreSave)
-          break
-      messages.append({'content': f'The user "{banned_user}" has been banned for the reason: {reason}.', 'author': '[SYSTEM]', 'color': 'system'})
-      await getHistoryAll()
-      
-    elif len(message) > 2000:
-      await sio.emit('statusCallback', {'error': 'messageLengthError', 'description': 'Maximum message length is 2000 characters'}, room=sid)
-      return
-    elif message.startswith('/debranothumphrey'):
-      await sio.emit('statusCallback', {'popup': "Easter", 'description': 'Looks like you found an easter egg! The real name is Humphrey.'}, room=sid)
-      return
-    elif message.startswith('/popup') and username in adminList:
-      await sio.emit('statusCallback', {'popup': "Admin Popup", 'description': message.replace('/popup ', '')})
-      return
-    elif message.startswith('/joinroom'):
-      current_room = room['room']
-      owned_rooms = 0
-      parse = message.split(' ')
-      room = parse[1]
-      try:
-        password = parse[2]
-      except(IndexError):
-        password = None
-      for rm in messages:
-        try:
-          if username == messages[rm][0]['room_meta']['owner']:
-            owned_rooms += 1
-          if owned_rooms > 5 and username not in adminList:
+  if len(message) > MESSAGE_CHARACTER_LIMIT:
+    await sio.emit('statusCallback', {'error': 'messageLengthError', 'description': 'Maximum message length is 2000 characters'}, room=sid)
+    return
+  elif message.startswith('/clear') and username in ADMIN_LIST:
+    messages = load_room(room['room'])
+    messages['messages'] = []
+    messages['messages'].append({'content': 'The chat has been cleared', 'author': '[SYSTEM]', 'color': 'system', 'id': load_room(room)['messages'][-1]['id'] + 1})
+    save(messages, load('rooms')[room['room']])
+    await getHistoryAll(room['room'])
+  elif message.startswith('/ban') and username in ADMIN_LIST:
+    reason = message.split('$+')[1]
+    banned_user = message.split(' ')[1].split('$+')[0]
+    messages = load_room(room['room'])
+    for messaged in messages['messages']:
+      if messaged['author'] == banned_user:
+        indx = messages['messages'].index(messaged)
+        messages['messages'][indx]['content'] = '[Removed]'
+        messages['messages'][indx]['author'] = '[Banned User]'
+    userStore = load('userIndex')
+    if banned_user in userStore:
+      banned_users = load('banned')
+      banned_users[banned_user] = userStore[banned_user]
+      del userStore[banned_user]
+      save(banned_users, 'banned')
+      save(userStore, 'userIndex')
+    messages['messages'].append({'content': f'The user "{banned_user}" has been banned for the reason: {reason}.', 'author': '[SYSTEM]', 'color': 'system', 'id': load_room(room)['messages'][-1]['id'] + 1})
+    save(messages, load('rooms')[room['room']])
+    await getHistoryAll(room['room'])
+  elif message.startswith('/popup') and username in ADMIN_LIST:
+    await sio.emit('statusCallback', {'popup': "Admin Popup", 'description': message.replace('/popup ', '')})
+    return
+  elif message.startswith('/joinroom'):
+    current_room = room['room']
+    owned_rooms = 0
+    parse = message.split(' ')
+    room = parse[1]
+    try:
+      password = parse[2]
+    except(IndexError):
+      password = None
+    if room not in load('rooms'):
+      room_chars = list(room)
+      for char in room_chars:
+        if char not in alphanumeric_list:
+          await sio.emit('statusCallback', {'error': 'alphanumericError', 'description': 'Room names can only contain alphanumeric characters, underscores (_), and dashes (-).'}, room=sid)
+          return
+      if len(room) > 30:
+        await sio.emit('statusCallback', {'error': 'nameLengthError', 'description': 'Room names cannot be greater than 30 characters.'}, room=sid)
+        return
+      for rm in load('rooms'):
+        if username == load_room(rm)['owner']:
+          owned_rooms += 1
+        if owned_rooms > 5 and username not in ADMIN_LIST:
             await sio.emit('statusCallback', {'error': 'Too many rooms', 'description': 'You own the maximum of 5 rooms already. You cannot create more rooms.'}, room=sid)
-        except(KeyError):
-          print('room metadata missing, assuming main room')
-      if room == 'main':
-        await getHistory(sid, room)
-        sio.leave_room(sid, current_room)
-        sio.enter_room(sid, room)
-        await sio.save_session(sid, {'room': room})
+      room_id = str(uuid.uuid4())
+      room_list = load('rooms')
+      room_list[room] = room_id
+      save(room_list, 'rooms')
+      new_room = load(room_id)
+      latest_id = 1
+      new_room['messages'] = []
+      new_room['messages'].append({'content': f'Room "{room}" created!', 'author': '[SYSTEM]', 'color': 'system', 'timestamp': str(datetime.datetime.now()), 'id': latest_id})
+      new_room['owner'] = username
+      new_room['protected'] = False
+      new_room['password'] = None
+      save(new_room, room_id)
+      await transfer_room(sid, current_room, room)
+      return
+    elif load_room(room)['protected'] == True:
+      if password == None:
+        await sio.emit('statusCallback', {'error': 'protectedRoom', 'description': 'This room is protected. Please enter a password'}, room=sid)
         return
-      if room not in messages:
-        room_chars = list(room)
-        for char in room_chars:
-          if char in alphanumeric_list:
-            continue
-          else:
-            print(room)
-            await sio.emit('statusCallback', {'error': 'alphanumericError', 'description': 'Room names can only contain alphanumeric characters, underscores (_), and dashes (-).'}, room=sid)
-            return
-        if len(room) > 30:
-          await sio.emit('statusCallback', {'error': 'nameLengthError', 'description': 'Room names cannot be greater than 30 characters.'}, room=sid)
-          return
-        messages[room] = []
-        latest_id = 1
-        messages[room].append({'content': f'Room "{room}" created!', 'author': '[SYSTEM]', 'color': 'system', 'timestamp': str(datetime.datetime.now()), 'id': latest_id, 'room_meta': {'owner': username, 'protected': False, 'password': None}})
-        await getHistory(sid, room)
-        await sendNewRooms()
-        sio.leave_room(sid, current_room)
-        sio.enter_room(sid, room)
-        await sio.save_session(sid, {'room': room})
-        return
-      elif messages[room][0]['room_meta']['protected'] == True:
-        if password == None:
-          await sio.emit('statusCallback', {'error': 'protectedRoom', 'description': 'This room is protected. Please enter a password'}, room=sid)
-          return
-        elif messages[room][0]['room_meta']['password'] == password:    
-          await getHistory(sid, room)
-          sio.leave_room(sid, current_room)
-          sio.enter_room(sid, room)
-          await sio.save_session(sid, {'room': room})
-          return
-        else:
-          await sio.emit('statusCallback', {'error': 'incorrectPassword', 'description': 'You entered the incorrect password.'}, room=sid)
-          return
-      else:
-        await getHistory(sid, room)
-        sio.leave_room(sid, current_room)
-        sio.enter_room(sid, room)
-        await sio.save_session(sid, {'room': room})
-        return
-    elif message.startswith('/lock'):
-      if room['room'] != 'main' and messages[room['room']][0]['room_meta']['owner'] == username:
-        lock = message.split(' ')
-        password = lock[1]
-        messages[room['room']][0]['room_meta']['protected'] = True
-        messages[room['room']][0]['room_meta']['password'] = password
-        await sendNewRooms()
-        await sio.emit('statusCallback', {'popup': 'Room Secured', 'description': f'Room has been locked with the password: {password}. If this is incorrect, simply run the lock command again to change it.'}, room=sid)
+      elif load_room(room)['password'] == password:    
+        await transfer_room(sid, current_room, room)
         return
       else:
-        await sio.emit('statusCallback', {'error': 'permissionError', 'description': 'You are not the owner of this room'}, room=sid)
-    elif message.startswith('/delete'):
-      if room['room'] != 'main' and messages[room['room']][0]['room_meta']['owner'] == username:
-        rooms = message.split(' ')
-        try:
-          roomnm = rooms[1]
-        except(IndexError):
-          await sio.emit('statusCallback', {'error': 'invalidCommand', 'description': 'Type your name after the delete command to delete the channel. (Ex. /delete example)'}, room=sid)
-        if roomnm == room['room']:
-          del messages[roomnm]
-          await getHistory(sid, 'main')
-          await sendNewRooms()
-          sio.leave_room(sid, room['room'])
-          sio.enter_room(sid, 'main')
-          await sio.save_session(sid, {'room': 'main'})
-        else:
-          await sio.emit('statusCallback', {'error': 'invalidCommand', 'description': 'Type your name after the delete command to delete the channel. (Ex. /delete example)'}, room=sid)
+        await sio.emit('statusCallback', {'error': 'incorrectPassword', 'description': 'You entered the incorrect password.'}, room=sid)
         return
-      else:
-        await sio.emit('statusCallback', {'error': 'permissionError', 'description': 'You are not the owner of this room'}, room=sid)
     else:
-      message = bleach.clean(message, tags=['b', 'i', 'a', 'u', 's'])
-      await distribute_message(message, sid, room['room'], dataid)
+      await transfer_room(sid, current_room, room)
+      return
+  elif message.startswith('/lock'):
+    room_data = load_room(room['room'])
+    if room_data['owner'] == username:
+      lock = message.split(' ')
+      password = lock[1]
+      room_data['protected'] = True
+      room_data['password'] = password
+      save(room_data, load('rooms')[room['room']])
+      await sendNewRooms()
+      await sio.emit('statusCallback', {'popup': 'Room Secured', 'description': f'Room has been locked with the password: {password}. If this is incorrect, simply run the lock command again to change it.'}, room=sid)
+      return
+    else:
+      await sio.emit('statusCallback', {'error': 'permissionError', 'description': 'You are not the owner of this room'}, room=sid)
+  elif message.startswith('/delete'):
+    if load_room(room['room'])['owner'] == username:
+      rooms = message.split(' ')
+      try:
+        roomnm = rooms[1]
+      except(IndexError):
+        await sio.emit('statusCallback', {'error': 'invalidCommand', 'description': 'Type your name after the delete command to delete the channel. (Ex. /delete example)'}, room=sid)
+      if roomnm == room['room']:
+        del messages[roomnm]
+        await transfer_room(sid, room['room'], 'main')
+      else:
+        await sio.emit('statusCallback', {'error': 'invalidCommand', 'description': 'Type your name after the delete command to delete the channel. (Ex. /delete example)'}, room=sid)
+      return
+    else:
+      await sio.emit('statusCallback', {'error': 'permissionError', 'description': 'You are not the owner of this room'}, room=sid)
   else:
-    await sio.emit('statusCallback', {'error': 'logInError', 'description': 'You cannot send a message while not logged in.'}, room=sid)
+    message = bleach.clean(message, tags=['b', 'i', 'a', 'u', 's'])
+    await distribute_message(message, sid, room['room'], dataid)
 
 # This is a seperate function that sends out the final message from the last function
-# I think I did this in an attempt to make the other function more readable
-# but all it did was make it harder to interpret, because half the function
-# is in a different function, that takes all the same variables as the last function.
+# This function is triggered if the message didn't contain a blocking command, and passed all
+# the checks.
 async def distribute_message(message, sid, room, data):
   global latest_id
-  for sidNum in validSids:
-    if sidNum == sid:
-      username = validSids[sid]
-      userColor = 'user'
-      if username in adminList:
-        userColor = 'admin'
-      if username == 'BuffMANs':
-        userColor = 'mans'
-      try:
-        latest_id = messages[room][-1]['id'] + 1
-      except(IndexError):
-        latest_id = 1
-      print('server dist to ' + room)
-      # Don't even try to wrap your head around the code to parse
-      # file uploads. The client sends an upload key and the server parses it
-      # to perform the following madness. If you're trying to debug this, have fun reading
-      # inline HTML, JS, and CSS all on a single line within a string, without any
-      # syntax-highlighting, and some of the worst formatting you'll ever see! 
-      # (I forgot you could do multi-line strings in Python with the """ syntax).
-      if data and active_upload_keys[data].split("!&")[0] != 'omtheme' and active_upload_keys[data].split("!&")[0] != 'omext':
-        attachments = f'<{active_upload_keys[data].split("!&")[0]} class=imgAttachment src=https://cdn.tbuk.site/{room}/{data}/{active_upload_keys[data].split("!&")[1]} height=300px></{active_upload_keys[data].split("!&")[0]}>'
-      elif data and active_upload_keys[data].split("!&")[0] == 'omtheme':
-        jsondata = json.loads(active_upload_keys[data].split("!&")[2])
-        themeKey = uuid.uuid4()
-        # Now this is what I call "server-side rendering"!
-        attachments = f'<div class=omThemePre><div class=colorPre style="background-color:{jsondata["background"]};"><pre></pre></div><div class=colorPre style="background-color:{jsondata["highlight"]};"><pre></pre></div><div class=colorPre style="background-color:{jsondata["accent"]};"><pre></pre></div><p class=fileTitle>Theme</p><p class=themeName>' + jsondata["name"].replace("'", r"&#39;") + f'</p><input type=hidden id={themeKey}data value=\'' + active_upload_keys[data].split("!&")[2].replace("'", r"&#39;") + f'\'><button id={themeKey}button class=applyTheme onclick="javascript: extData=JSON.parse(document.getElementById(\'{themeKey}data\').value); spawnPopup();">Apply</button></div>'
-      elif data and active_upload_keys[data].split("!&")[0] == 'omext':
-        jsondata = json.loads(active_upload_keys[data].split("!&")[2])
-        extKey = uuid.uuid4()
-        attachments = f'<div class=omThemePre><p class=fileTitle>Extension</p><p class=themeName>' + jsondata["name"].replace("'", r"&#39;") + f'</p><br><p class=themeDesc>' + jsondata["description"].replace("'", r"&#39;") + f'</p><input type=hidden id={extKey}data value=\'' + active_upload_keys[data].split("!&")[2].replace("'", r"&#39;") + f'\'><button id={extKey}button class=applyTheme onclick="javascript: extData=JSON.parse(document.getElementById(\'{extKey}data\').value); spawnPopup();">Apply</button></div>'
-      else:
-        attachments = False
-      await sio.emit('msgDist', {'content': marko.convert(message), 'author': username, 'color': userColor, 'timestamp': str(datetime.datetime.utcnow().isoformat()), 'id': latest_id, 'attachments': attachments}, room=room)
-      messages[room].append({'content': marko.convert(message), 'author': username, 'color': userColor, 'timestamp': str(datetime.datetime.utcnow().isoformat()), 'id': latest_id, 'attachments': attachments})
-      with open('message.store', 'wb') as messageStoreSave:
-        pickle.dump(messages, messageStoreSave)
-      return
+  username = await validate_sid(sid)
+  if not username:
+    return
+  userColor = 'user'
+  if username in ADMIN_LIST:
+    userColor = 'admin'
+  elif username == 'BuffMANs':
+    userColor = 'mans'
+  try:
+    latest_id = load_room(room)['messages'][-1]['id'] + 1
+  except(IndexError):
+    latest_id = 1
+  # Don't even try to wrap your head around the code to parse
+  # file uploads. Just leave it, it's not worth trying to change.
+  # If you are trying to change it, then you'll need to change it 
+  # alongside the dataSend() function.
+  if data and active_upload_keys[data].split("!&")[0] != 'omtheme' and active_upload_keys[data].split("!&")[0] != 'omext':
+    attachments = f'<{active_upload_keys[data].split("!&")[0]} class=imgAttachment src=https://{CDN_DOMAIN}/{room}/{data}/{active_upload_keys[data].split("!&")[1]} height=300px></{active_upload_keys[data].split("!&")[0]}>'
+  elif data and active_upload_keys[data].split("!&")[0] == 'omtheme':
+    jsondata = json.loads(active_upload_keys[data].split("!&")[2])
+    themeKey = uuid.uuid4()
+    # Now this is what I call "server-side rendering"!
+    attachments = f'<div class=omThemePre><div class=colorPre style="background-color:{jsondata["background"]};"><pre></pre></div><div class=colorPre style="background-color:{jsondata["highlight"]};"><pre></pre></div><div class=colorPre style="background-color:{jsondata["accent"]};"><pre></pre></div><p class=fileTitle>Theme</p><p class=themeName>' + jsondata["name"].replace("'", r"&#39;") + f'</p><input type=hidden id={themeKey}data value=\'' + active_upload_keys[data].split("!&")[2].replace("'", r"&#39;") + f'\'><button id={themeKey}button class=applyTheme onclick="javascript: extData=JSON.parse(document.getElementById(\'{themeKey}data\').value); spawnPopup();">Apply</button></div>'
+  elif data and active_upload_keys[data].split("!&")[0] == 'omext':
+    jsondata = json.loads(active_upload_keys[data].split("!&")[2])
+    extKey = uuid.uuid4()
+    attachments = f'<div class=omThemePre><p class=fileTitle>Extension</p><p class=themeName>' + jsondata["name"].replace("'", r"&#39;") + f'</p><br><p class=themeDesc>' + jsondata["description"].replace("'", r"&#39;") + f'</p><input type=hidden id={extKey}data value=\'' + active_upload_keys[data].split("!&")[2].replace("'", r"&#39;") + f'\'><button id={extKey}button class=applyTheme onclick="javascript: extData=JSON.parse(document.getElementById(\'{extKey}data\').value); spawnPopup();">Apply</button></div>'
+  else:
+    attachments = False
+  await sio.emit('msgDist', {'content': marko.convert(message), 'author': username, 'color': userColor, 'timestamp': str(datetime.datetime.utcnow().isoformat()), 'id': latest_id, 'attachments': attachments}, room=room)
+  room_data = load_room(room)
+  room_data['messages'].append({'content': marko.convert(message), 'author': username, 'color': userColor, 'timestamp': str(datetime.datetime.utcnow().isoformat()), 'id': latest_id, 'attachments': attachments})
+  save(room_data, load('rooms')[room])
 
 # This is an endpoint that checks the user's provided account details, and if all checks
-# pass, adds it to the user "DB" (pickled python dict). This looks scary, but it's just
-# a lot of simple if statements.
+# pass, adds it to the user DB. It's basically just a large block of if statements.
 @sio.event
 async def register_account(sid, username, password):
-  if password == 'humphreyistherealname':
-    await sio.emit('statusCallback', {'error': 'identityCrisisError', 'description': 'The robot had an identity crisis, but is now named Humphrey. (You found an easter egg, your account has been created).'}, room=sid)
   username_chars = list(username)
   for char in username_chars:
-    if char in alphanumeric_list:
-      continue
-    else:
+    if char not in alphanumeric_list:
       await sio.emit('statusCallback', {'error': 'alphanumericError', 'description': 'Usernames can only contain alphanumeric characters, underscores (_), and dashes (-).'}, room=sid)
       return
-  if predict_prob([username]) > [0.9]:
+  userStore = load('userIndex')
+  if username in userStore:
+    await sio.emit('statusCallback', {'error': 'duplicateUsernameError', 'description': 'Username already taken'}, room=sid)
+    return
+  elif len(username) > 30:
+    await sio.emit('statusCallback', {'error': 'usernameTooLong', 'description': 'Max username length is 30 characters'}, room=sid)
+    return
+  elif len(password) > 50:
+    await sio.emit('statusCallback', {'error': 'passwordTooLong', 'description': 'Max password length is 50 characters'}, room=sid)
+    return
+  elif len(username) == 0:
+    await sio.emit('statusCallback', {'error': 'usernameTooShort', 'description': 'Usernames cannot be empty'}, room=sid)
+    return
+  elif len(password) < 5:
+    await sio.emit('statusCallback', {'error': 'passwordTooShort', 'description': 'Passwords must be above 5 characters'}, room=sid)
+    return
+  elif predict_prob([username]) > [0.9]:
     await sio.emit('statusCallback', {'error': 'profanityFilter', 'description': 'Your username had a profanity probability greater than the threshold of 90%. As such, your message has been deleted.'}, room=sid)
     return
-  for name in userStore:
-    if username == name:
-      await sio.emit('statusCallback', {'error': 'duplicateUsernameError', 'description': 'Username already taken'}, room=sid)
-      return
-    elif len(username) > 30:
-      await sio.emit('statusCallback', {'error': 'usernameTooLong', 'description': 'Max username length is 30 characters'}, room=sid)
-      return
-    elif len(password) > 50:
-      await sio.emit('statusCallback', {'error': 'passwordTooLong', 'description': 'Max password length is 50 characters'}, room=sid)
-      return
-    elif len(username) == 0:
-      await sio.emit('statusCallback', {'error': 'usernameTooShort', 'description': 'Usernames cannot be empty'}, room=sid)
-      return
-    elif len(password) < 5:
-      await sio.emit('statusCallback', {'error': 'passwordTooShort', 'description': 'Passwords must be above 5 characters'}, room=sid)
-      return
-    #elif username.lower() in adminList:
-    #  await sio.emit('statusCallback', {'error': 'identityTheftError', 'description': 'You cannot steal the identity of an admin.'}, room=sid)
-    #  return
-  for name in bannedUsers:
-    if username == name:
-      await sio.emit('statusCallback', {'error': 'bannedUser', 'description': 'This username belongs to a previously banned user.'}, room=sid)
-      return
-  userStore[username] = password
-  with open('user.store', 'wb') as userStoreSave:
-    pickle.dump(userStore, userStoreSave)
+  if username in load('banned'):
+    await sio.emit('statusCallback', {'error': 'bannedUser', 'description': 'This username belongs to a previously banned user.'}, room=sid)
+    return
+  user_uid = str(uuid.uuid4())
+  userStore[username] = user_uid
+  save(userStore, 'userIndex')
+  password = password.encode('utf-8')
+  encrypt = bcrypt.hashpw(password, bcrypt.gensalt(10))
+  b64_encode = base64.b64encode(encrypt)
+  b64_string = b64_encode.decode('utf-8')
+  data = {'password': b64_string}
+  save(data, user_uid)
   validSids[sid] = username
   await sio.emit('statusCallback', {'status': 'accountCreated'}, room=sid)
   await sio.emit('statusCallback', {'popup': 'Success!', 'description': 'Your account has been successfully created!'}, room=sid)
 
 # This is the login function. It verifies the user's account credentials, and
-# checks their password with the unencrypted, plaintext password in the dict.
-# Please remind me to add encryption with BCrypt, it wouldn't be hard to do.
-
-# Dev note (11/16/2022): I wrote this over a month ago. I have not implemented encryption
-# I'm sorry about this.
+# checks their password with the one stored in the DB. Don't worry, as of the
+# code rewrite, this is all encrypted.
 @sio.event
 async def login(sid, username, password):
-  for name in bannedUsers:
-    if name == username:
-      await sio.emit('statusCallback', {'error': 'bannedUserError', 'description': 'This username belongs to a previously banned user.'}, room=sid)
-      return
-  for name in userStore:
-    if username == name and password == userStore[name]:
-      validSids[sid] = username
-      await sio.emit('statusCallback', {'status': 'accountLogin'}, room=sid)
-      return
+  if username in load('banned'):
+    await sio.emit('statusCallback', {'error': 'bannedUserError', 'description': 'You have been banned from participating in this chatroom.'}, room=sid)
+    return
+  userStore = load('userIndex')
+  password = password.encode('utf-8')
+  if username in userStore and bcrypt.checkpw(password, base64.b64decode(load(userStore[username])['password'])):
+    validSids[sid] = username
+    await sio.emit('statusCallback', {'status': 'accountLogin'}, room=sid)
+    return
   await sio.emit('statusCallback', {'error': 'accountLoginError', 'description': 'The desired account does not exist, or you used an incorrect password.'}, room=sid)
 
-# In my 2am caffiene-fueled programming spree, I decided to implement type indicators.
-# This feature has actually been fully implemented since before changelogs existed (<v1.0.1),
-# but was broken by v1.0.7 (The Styling Update), when I accidentally covered the typing
-# indicators with the message input box. They're still there, and still showing
-# when other users are typing, you just can't see them. OpenMessage is on v4.0.0, this has
-# been a known issue for months, I just don't wanna deal with CSS.
+# Type indicators are currently broken.
 @sio.event
 async def amTyping(sid):
   rm = await sio.get_session(sid)
-  for sidNum in validSids:
-    if sidNum == sid:
-      username = validSids[sid]
-      await sio.emit('userTyping', username, room=rm['room'])
-      return
-  await sio.emit('statusCallback', {'error': 'typingIndicatorError', 'description': "The server attempted to create a typing indicator, but the user didn't have a valid sid# attached to a username."}, room=sid)
+  username = await validate_sid(sid)
+  if not username:
+    return
+  await sio.emit('userTyping', username, room=rm['room'])
 
+# Takes a temp key given from a 2fa key and changes the password of the associated user
 @sio.event
 async def change_password(sid, key, password):
   print(temp_pass_keys)
@@ -623,99 +532,76 @@ async def change_password(sid, key, password):
     if keyb[1] == key:
       username = keyb[0]
       temp_pass_keys.pop(temp_pass_keys.index(keyb))
-      userStore[username] = password
-      with open('user.store', 'wb') as userStoreSave:
-        pickle.dump(userStore, userStoreSave)
+      userStore = load('userIndex')
+      user_data = load(userStore[username])
+      user_data['password'] = password
+      save(user_data, userStore[username])
       await sio.emit('statusCallback', {'popup': 'passwordSuccess', 'description': 'Successfully changed your password!'}, room=sid)
       return
   else:
     await sio.emit('statusCallback', {'error': 'invalidTwoKey', 'description': 'You must validate your identity with a 2fa key before changing password.'}, room=sid)
     return
 
+# Validates a user's provided 2fa key
 @sio.event
 async def validate_2fa(sid, key):
   for secret in secretStore:
     tempotp = pyotp.TOTP(secretStore[secret])
     if tempotp.verify(key):
+      twokey = str(uuid.uuid4())
       username = secret
-      break
+      temp_pass_keys.append([username, twokey])
+      await sio.emit('twoKey', {'key': twokey, 'status': 'success'}, room=sid)
   else:
     await sio.emit('twoKey', 'invalidkey', room=sid)
     return
-  secret = secretStore[username]
-  totp = pyotp.TOTP(secret)
-  twokey = str(uuid.uuid4())
-  if totp.verify(key):
-    await sio.emit('twoKey', {'key': twokey, 'status': 'success'}, room=sid)
-    temp_pass_keys.append([username, twokey])
-  else:
-    await sio.emit('twoKey', {'status': 'invalidkey'}, room=sid)
 
-
+# Enables 2fa for a user by generating a QR code for them and storing their secret
 @sio.event
 async def enable_2fa(sid):
-  for sidNum in validSids:
-    if sidNum == sid:
-      username = validSids[sid]
-      break
+  username = await validate_sid(sid)
+  if not username:
+    return
   secret = pyotp.random_base32()
   secretStore[username] = secret
   with open('secret.store', 'wb') as secretStoreSave:
     pickle.dump(secretStore, secretStoreSave)
   
-  data = pyotp.totp.TOTP(secret).provisioning_uri(name=f'{username}@openmessenger', issuer_name='OpenMessage')
-  code = qrcode.make(data)
+  code = qrcode.make(pyotp.totp.TOTP(secret).provisioning_uri(name=f'{username}@openmessenger', issuer_name='OpenMessage'))
   code.save('tmp.png')
   with open('tmp.png', 'rb') as image:
     imaged = image.read()
     await sio.emit('sendQR', {'qrcode': str(base64.b64encode(imaged)).replace("b'", '').replace("'", ''), 'contains': '2fa'}, room=sid)
   image.close()
 
+# Checks if the user emitting this event has 2fa enabled
 @sio.event
 async def has_2fa(sid):
-  for sidNum in validSids:
-    if sidNum == sid:
-      username = validSids[sid]
-      break
-  else:
+  username = await validate_sid(sid)
+  if not username:
     return
-  if username in secretStore.keys():
+  if username in secretStore:
     await sio.emit('does2fa', True, room=sid)
   else:
     await sio.emit('does2fa', False, room=sid)
 
-
 # sends the message history to the given SID#, this is just a function for readability.
-# (i could really do this with other commonly-used lines)
 async def getHistory(sid, rm):
-  await sio.emit('messageHistory', messages[rm], room=sid)
+  await sio.emit('messageHistory', load_room(rm)['messages'], room=sid)
 
 # same as the above function, but it sends the updated message history to everyone
 # in the room. This is called when messages are deleted or edited.
 # Yes, this means the user recieves the entire room's message history
-# when a message is edited or deleted, instead of just updating a single message. Don't
-# ask me why this is written this way.
+# when a message is edited or deleted, instead of just updating a single message.
+# This is going to be changed shortly.
 async def getHistoryAll(rm):
-  await sio.emit('messageHistory', messages[rm], room=rm)
+  await sio.emit('messageHistory', load_room(rm)['messages'], room=rm)
 
-# This starts the ratelimiter counter. If this breaks, nobody can send messages,
-# but this has been implemented since before changelogs existed (<1.0.1), so it
-# shouldn't ever break.
+# This starts the ratelimiter counter, which counts down the # of messages a user has sent.
+# This is required, without it you would send 2 messages and be permanently ratelimited.
 loop = asyncio.get_event_loop()
 loop.create_task(ratelimiter())
 
 # starts the uvicorn server without CLI options. This is requred for systemd compatibility.
-# Yes, I know gunicorn would be much better than uvicorn (even if just for performance improvements alone)
-# but I'm to scared to try and implement it so I won't do that (for now).
-# This is the least of my worries, this code needs serious refactoring before this minor
-# issue is important.
-
-# (10/24/2022) - Tick up this counter every time you read this and ignore it: 9
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8010, log_level="info")
-
-# ------------------------------------------------------------------------ #
-# THIS COMMENT IS MEANT TO WARN YOU ABOUT THE BUILD BEING A CANARY BUILD.  #
-# IF THIS COMMENT IS STILL HERE IN A RELEASE BUILD, MAKE SURE TO TELL ME   #
-# THAT I AM AN IDIOT, AND NEED TO REMEMBER TO REMOVE THIS.                 #
-# ------------------------------------------------------------------------ #
+    uvicorn.run("main:app", host="0.0.0.0", port=SERVER_PORT, log_level="info")

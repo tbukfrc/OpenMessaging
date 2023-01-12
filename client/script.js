@@ -1,4 +1,4 @@
-let socket = io.connect('messageservices.tbuk.site');
+let socket = io.connect('messageservices.tbuk.me');
 let progressBar = document.getElementById('srvload');
 let regusername;
 let logusername;
@@ -67,8 +67,12 @@ function download(filename, themeFile) {
 }
 
 socket.on("connect", () => {
-    socket.emit('browserSafari', false)
-  });
+  if (platform.name == 'Safari' && platform.os.includes('iOS')) {
+    socket.emit('browserSafari', true);
+  } else {
+    socket.emit('browserSafari', false);
+  }
+});
 
 socket.on('disconnect', () => {
   location.reload()
