@@ -44,7 +44,7 @@ I created this project to be as simple as possible to set up and use. Sending an
     ],
     // The port the server should listen on
     "server_port": 8010,
-    // The port your Redis DB is on (a fresh install should be the default, if you have multiple instances make sure to change this to a new one)
+    // The port your Redis DB is on (a fresh install should be the default of 6379, if you have multiple instances make sure to change this to a new one)
     "redis_port": 6379,
     // The db within the defined Redis instance (if other services are using Redis, I would highly recommend creating a new instance, but changing this would work too)
     "redis_db": 0,
