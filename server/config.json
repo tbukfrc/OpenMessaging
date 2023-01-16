@@ -3,8 +3,9 @@
         "admin",
         "example"
     ],
-    "server_port": 8020,
+    "server_port": 8010,
     "redis_port": 6380,
+    "redis_db": 0,
     "cdn_domain": "cdn.tbuk.me",
     "admin_upload_limit": 100,
     "user_upload_limit": 50,

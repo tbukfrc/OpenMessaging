@@ -20,7 +20,7 @@
     <html lang="en" xml:lang="en" xmlns= "http://www.w3.org/1999/xhtml"></html>
     <link rel="stylesheet" href="/highlight/styles/github-dark.min.css">
     <script src="/highlight/highlight.min.js"></script>
-    <script src="register.js"></script>
+    <script src="/register.js"></script>
     <script src="/scripts/platform.js"></script>
   </head>
   <body>
@@ -34,13 +34,10 @@
       <input type=file id=uploadCustom class=fileUpload accept='.omtheme, .omext'>
       <details>
         <summary>Behavior:</summary>
-        <input name=lowBandwidthCheck id=bandCheck type="checkbox">
+        <input name=lowBandwidthCheck id=lowBandwidthCheck type="checkbox">
         <label for=bandCheck>Low bandwidth mode</label>
         <details class=nested id=advBehavior>
           <summary>Advanced:</summary>
-          <input name=altCDNcheckbox id=cdnCheck type="checkbox">
-          <label for=cdnCheck>Use Alternate CDN</label>
-          <br>
           <label for=customJS>Custom JS:</label>
           <div id=editor style="height: 300px; width: 500px"></div>
           <!--<textarea name=customJS id=customJS></textarea>-->
@@ -63,14 +60,14 @@
         <input type="checkbox" id=compactCheck>
         <label for=compactCheck>Compact mode:</label>
         <br>
-        <label for=customBColor>Custom background color:</label>
-        <input name=customBColor id=customBColor type=color value=#333333>
+        <label for=custombackgroundColor>Custom background color:</label>
+        <input name=customBColor id=custombackgroundColor type=color value=#333333>
         <br>
-        <label for=customHColor>Custom highlight color:</label>
-        <input name=customHColor id=customHColor type=color value=#2C2C2C>
+        <label for=customhighlightColor>Custom highlight color:</label>
+        <input name=customHColor id=customhighlightColor type=color value=#2C2C2C>
         <br>
-        <label for=customAColor>Custom accent color:</label>
-        <input name=customAColor id=customAColor type=color value=#D3D3D3>
+        <label for=customaccentColor>Custom accent color:</label>
+        <input name=customAColor id=customaccentColor type=color value=#D3D3D3>
         <br>
         <label for="imageSize">Max image height (in CSS units):</label>
         <input name=imageSize id=imageSize placeholder=imageSize></input>
@@ -164,6 +161,6 @@
       <progress id=srvload value=0 max=100></progress>
     </div>
   -->
-    <script src="script.js?v=4.9.1"></script>
+    <script src="./script.js?v=4.9.3"></script>
   </body>
 </html>

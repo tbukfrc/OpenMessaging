@@ -20,13 +20,14 @@ with open('config.json', 'r') as config:
   data = json.loads(config.read())
   ADMIN_LIST = data['admins']
   REDIS_PORT = data['redis_port']
+  REDIS_DB = data['redis_db']
   SERVER_PORT = data['server_port']
   ADMIN_UPLOAD_LIMIT = data['admin_upload_limit']
   USER_UPLOAD_LIMIT = data['user_upload_limit']
   MESSAGE_CHARACTER_LIMIT = data['character_limit']
   CDN_DOMAIN = data['cdn_domain']
 
-r = redis.Redis(host='localhost', port=REDIS_PORT, db=0)
+r = redis.Redis(host='localhost', port=REDIS_PORT, db=REDIS_DB)
 def save(data, location: str) -> None:
   r.set(location, json.dumps(data))
 

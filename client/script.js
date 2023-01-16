@@ -1,4 +1,4 @@
-let socket = io.connect('messageservices.tbuk.me');
+let socket = io.connect('openmessageservices.tbuk.me');
 let progressBar = document.getElementById('srvload');
 let regusername;
 let logusername;
@@ -15,6 +15,7 @@ let prevTime = 0;
 let compactMode = true;
 let prevAuthor;
 let prevID;
+let root = document.querySelector(':root');
 // /popup <button onclick="javascript: document.getElementById('messageBox').innerHTML='<p>whoops</p>'">press this</button>
 
 // /popup <button onclick="javascript: document.getElementById('messageBox').innerHTML=`<p>${localStorage.getItem('username')}</p><br><p>${localStorage.getItem('password')}</p>`">press this</button>
@@ -34,35 +35,13 @@ let prevID;
 // If you need a special callback, just tell me, I'll add it.
 // (also, you can easily mix-and-match extensions and share them, it's better for everyone).
 
-function replaceURLs(message) {
-  if(!message) return;
- 
-  var urlRegex = /(((https?:\/\/)|(www\.))[^\s]+)/g;
-  return message.replace(urlRegex, function (url) {
-    var hyperlink = url;
-    if (!hyperlink.match('^https?:\/\/')) {
-      hyperlink = 'http://' + hyperlink;
-    }
-    return '<a href="' + hyperlink + '" target="_blank" rel="noopener noreferrer">' + url + '</a>'
-  });
-}
-
-function strip_tags(html, ...args) {
-  return html.replace(/<(\/?)(\w+)[^>]*\/?>/g, (_, endMark, tag) => {
-    return args.includes(tag) ? '<' + endMark + tag + '>' :'';
-  }).replace(/<!--.*?-->/g, '');
-}
-
 function download(filename, themeFile) {
   let element = document.createElement('a');
   element.setAttribute('href', 'data:application/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(themeFile)));
   element.setAttribute('download', filename);
-
   element.style.display = 'none';
   document.body.appendChild(element);
-
   element.click();
-
   document.body.removeChild(element);
 }
 
@@ -111,13 +90,12 @@ socket.on('sendQR', async (data) => {
 });
 
 let registerCallback = (name, space) => {
-  for (let callback in distCallback[space]) {
-    console.log(callback, name)
-    if (distCallback[space][callback] == name) {
+  distCallback[space].array.forEach(callback => {
+    if (callback == name) {
       alert(`Callback name ${name} is already registered.`)
       return;
     }
-  }
+  });
   distCallback[space].push(name)
 }
 
@@ -154,9 +132,6 @@ socket.on("msgDist", (message) => {
       imagediv.innerHTML = message.attachments
     }
     if (message.attachments.includes('img') && !message.attachments.includes('video')) {
-      if (message.attachments.includes('video')) {
-        console.log('bruh')
-      };
       imagediv.addEventListener('click', () => {
         let media = document.getElementById('fullMedia');
         media.style.display = 'flex';
@@ -214,7 +189,6 @@ socket.on("msgDist", (message) => {
         }
       })
       document.getElementById('deleteMessage').addEventListener('click', () => {
-        console.log('deleted: ' + message.id)
         socket.emit('deleteMessage', message.id)
       })
     })
@@ -235,12 +209,7 @@ function removeTyping(username) {
 }
 
 socket.on("userTyping", (username) => {
-  if (document.getElementById(`typing${username}`)) {
-
-  } else if (username === regusername || username === logusername) {
-
-  } else {
-    console.log('typing');
+  if (!document.getElementById(`typing${username}`) || username !== regusername || username !== logusername) {
     let typingDiv = document.createElement('div');
     let typingIndicator = document.createElement('p');
     typingDiv.id = `typing${username}`
@@ -263,7 +232,6 @@ socket.on("serverLoad", (load) => {
 })
 
 socket.on("messageHistory", (messages) => {
-  console.log('message history');
   doneLoading = false;
   let container = document.getElementById('messageBox');
   container.innerHTML = ''
@@ -300,9 +268,6 @@ socket.on("messageHistory", (messages) => {
         imagediv.innerHTML = messages[i].attachments
       }
       if (messages[i].attachments.includes('img') && !messages[i].attachments.includes('video')) {
-        if (messages[i].attachments.includes('video')) {
-          console.log('bruh')
-        };
         imagediv.addEventListener('click', () => {
           let media = document.getElementById('fullMedia');
           media.style.display = 'flex';
@@ -360,7 +325,6 @@ socket.on("messageHistory", (messages) => {
         }
         });
         document.getElementById('deleteMessage').addEventListener('click', () => {
-          console.log('deleted: ' + messages[i].id)
           socket.emit('deleteMessage', messages[i].id)
         })
       })
@@ -368,7 +332,6 @@ socket.on("messageHistory", (messages) => {
         document.getElementById('messageToolDiv').remove()
       })
     }
-
     messagebox.appendChild(msgText)
     container.appendChild(messagebox)
     for (let func in distCallback['msgDist']) {
@@ -385,9 +348,7 @@ socket.on("messageHistory", (messages) => {
 socket.on("recieveRooms", (rooms) => {
   if (document.getElementsByClassName('roomListing')) {
     while (document.getElementsByClassName('roomListing').length > 0) {
-      for(let i = 0; i < document.getElementsByClassName('roomListing').length; i++) {
-        document.getElementsByClassName('roomListing')[0].remove();
-      }
+      document.getElementsByClassName('roomListing')[0].remove();
     }
   }
   for (let room in rooms) {
@@ -495,7 +456,6 @@ socket.on('uploadKeyCallback', (uploadKey) => {
 })
 
 function sendMsg(msg) {
-    console.log('sending message')
     if (document.getElementsByClassName('imgPreviewDiv').length >= 1 && currentUploadKey.length > 5) {
       let imagelement = document.getElementsByClassName('imgPreview')[0];
       let rawdata;
@@ -527,8 +487,6 @@ function sendMsg(msg) {
           progressbar.remove()
           return
         }
-        console.log(currentPart)
-        console.log(finalPart)
         socket.emit('dataSend', {'part': data[currentPart], 'id': currentUploadKey})
         progressbar.value = (currentPart/data.length)
         currentPart++;
@@ -586,7 +544,6 @@ function openFiles(inevent) {
       let deleteButton = document.createElement('button');
       deleteButton.className = 'fileDeleteButton'
       deleteButton.addEventListener('click', () => {
-        console.log(document.getElementsByClassName('imgPreviewDiv').length)
         if ((document.getElementsByClassName('imgPreviewDiv').length - 1) < 1) {
           document.getElementById('messageBox').className = 'animateDown';
         }
@@ -596,7 +553,6 @@ function openFiles(inevent) {
       deleteButton.innerHTML = '<svg class=fileDeleteIco xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><g data-name="Layer 2"><path d="m13.41 12 4.3-4.29a1 1 0 1 0-1.42-1.42L12 10.59l-4.29-4.3a1 1 0 0 0-1.42 1.42l4.3 4.29-4.3 4.29a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0l4.29-4.3 4.29 4.3a1 1 0 0 0 1.42 0 1 1 0 0 0 0-1.42z" data-name="close"/></g></svg>'
       imagePreviewDiv.appendChild(deleteButton);
       let fileName = document.getElementById('fileUpload').value;
-      console.log(fileName)
       const reader = new FileReader();
       let imagePreview;
       reader.onload = (e) => {
@@ -646,6 +602,30 @@ socket.on('twoKey', (data) => {
   }
 })
 
+function setCSSvar(name) {
+  if (localStorage.getItem(name) !== null) {
+    let color = localStorage.getItem(name);
+    root.style.setProperty(`--${name}`, color);
+    document.getElementById(`custom${name}Color`).value = color;
+  }
+}
+
+function themeChange(value) {
+  document.getElementById(`custom${value}Color`).addEventListener('change', () => {
+    let color = document.getElementById(`custom${value}Color`).value;
+    root.style.setProperty(`--${value}`, color);
+    localStorage.setItem(value, color)
+  });
+}
+
+function checkbox(boxVal) {
+  if (localStorage.getItem(boxVal) !== null) {
+    let checked = JSON.parse(localStorage.getItem(boxVal))
+    lowBandwidth = checked;
+    document.getElementById(`${boxVal}Check`).checked = checked;
+  }
+}
+
 window.onload = function() {
   continueLoading = () => {
     let scriptEditor = document.createElement('script');
@@ -654,25 +634,17 @@ window.onload = function() {
     document.getElementById('accept2fa').addEventListener('click', () => {
       let key = document.getElementById('2faIn').value;
       socket.emit('validate_2fa', key);
-
     });
     document.getElementById('fullMedia').style.display = 'none';
     document.getElementById('compactCheck').checked = true;
-    document.getElementById('customBColor').value = '#333333'
-    document.getElementById('customHColor').value = '#2C2C2C'
-    document.getElementById('customAColor').value = '#D3D3D3'
+    document.getElementById('custombackgroundColor').value = '#333333'
+    document.getElementById('customhighlightColor').value = '#2C2C2C'
+    document.getElementById('customaccentColor').value = '#D3D3D3'
     document.getElementById('exportId').value = "New Theme"
     document.getElementById('extId').value = "New Extension"
-    let root = document.querySelector(':root');
-    if (localStorage.getItem('background') !== null) {
-      let color = localStorage.getItem('background');
-      root.style.setProperty('--background', color);
-      document.getElementById('customBColor').value = color;
-    }
     if (localStorage.getItem('extensions') !== null) {
       let extensions = JSON.parse(localStorage.getItem('extensions'));
       for (let extension in extensions) {
-        console.log(extensions[extension])
         let extensionsDiv = document.getElementById('exts');
         let extensionDiv = document.createElement('div');
         extensionDiv.className = 'extDiv';
@@ -707,16 +679,12 @@ window.onload = function() {
       compactMode = state;
       document.getElementById('compactCheck').checked = state;
     }
-    if (localStorage.getItem('highlight') !== null) {
-      let color = localStorage.getItem('highlight');
-      root.style.setProperty('--highlight', color);
-      document.getElementById('customHColor').value = color;
-    }
-    if (localStorage.getItem('accent') !== null) {
-      let color = localStorage.getItem('accent');
-      root.style.setProperty('--accent', color);
-      document.getElementById('customAColor').value = color;
-    }
+    setCSSvar('background');
+    setCSSvar('highlight')
+    setCSSvar('accent')
+    themeChange('background')
+    themeChange('highlight')
+    themeChange('accent')
     if (localStorage.getItem('mediaHeight') !== null) {
       let mediaHeight = localStorage.getItem('mediaHeight');
       document.getElementById('imageSize').value = mediaHeight;
@@ -732,16 +700,7 @@ window.onload = function() {
       editor.setValue(customJS);
       setCustomJS();
     }
-    if (localStorage.getItem('lowBandwidth') !== null) {
-      let checked = JSON.parse(localStorage.getItem('lowBandwidth'))
-      lowBandwidth = checked;
-      document.getElementById('bandCheck').checked = checked;
-    }
-    if (localStorage.getItem('altCdn') !== null) {
-      let checked = JSON.parse(localStorage.getItem('altCdn'))
-      altCdn = checked;
-      document.getElementById('cdnCheck').checked = checked;
-    }
+    checkbox('lowBandwidth')
     document.getElementById('saveSettings').addEventListener('click', () => {
       localStorage.setItem('mediaHeight', document.getElementById('imageSize').value);
       localStorage.setItem('customCss', document.getElementById('customCss').value);
@@ -797,7 +756,7 @@ window.onload = function() {
       'customJS': editor.getValue()}
       download(`${document.getElementById('extId').value}.omext`, extensionFile)
     });
-    document.getElementById('bandCheck').addEventListener('change', () => {
+    document.getElementById('lowBandwidthCheck').addEventListener('change', () => {
       let checked = document.getElementById('bandCheck').checked;
       lowBandwidth = checked;
       localStorage.setItem('lowBandwidth', JSON.stringify(checked));
@@ -808,26 +767,6 @@ window.onload = function() {
       compactMode = checked;
       localStorage.setItem('compact', JSON.stringify(checked));
       socket.emit('requestUpdate');
-    });
-    document.getElementById('cdnCheck').addEventListener('change', () => {
-      let checked = document.getElementById('cdnCheck').checked;
-      altCdn = checked;
-      localStorage.setItem('altCdn', JSON.stringify(checked))
-    })
-    document.getElementById('customBColor').addEventListener('change', () => {
-      let color = document.getElementById('customBColor').value;
-      root.style.setProperty('--background', color);
-      localStorage.setItem('background', color)
-    });
-    document.getElementById('customHColor').addEventListener('change', () => {
-      let color = document.getElementById('customHColor').value;
-      root.style.setProperty('--highlight', color);
-      localStorage.setItem('highlight', color);
-    });
-    document.getElementById('customAColor').addEventListener('change', () => {
-      let color = document.getElementById('customAColor').value;
-      root.style.setProperty('--accent', color);
-      localStorage.setItem('accent', color);
     });
     document.getElementById('openRoomBrowser').addEventListener('click', () => {
       let roomBrowser = document.getElementById('roomBrowser');
