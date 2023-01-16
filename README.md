@@ -49,7 +49,7 @@ I created this project to be as simple as possible to set up and use. Sending an
     // The db within the defined Redis instance (if other services are using Redis, I would highly recommend creating a new instance, but changing this would work too)
     "redis_db": 0,
     // The domain of your CDN.
-    "cdn_domain": "cdn.tbuk.me",
+    "cdn_domain": "cdn.example.site",
     // The file size limit of admin users (in MB)
     "admin_upload_limit": 100,
     // The file size limit of standard users (in MB)
