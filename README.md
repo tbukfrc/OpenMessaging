@@ -4,7 +4,7 @@ Hello! This is my latest project, OpenMessage. It's an open-source messenger wri
 
 I created this project to be as simple as possible to set up and use. Sending and recieving messages is handled via socket-io.
 
-Demo at [https://openmessage.tbuk.me](https://openmessage.tbuk.me)
+Demo at: [https://openmessage.tbuk.me](https://openmessage.tbuk.me)
 
 ### Features:
 * Instantly send and recieve messages
