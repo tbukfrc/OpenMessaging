@@ -89,5 +89,7 @@ cdn.example.site {
 }
 ```
 Make sure to change the paths and add the server port!
+Now, finally, go to the `script.js` file in the client folder, and change the domain on the first line to your backend domain.
+Ex. `let socket = io.connect('backend.example.site')`
 
 Once you've changed the config, run `sudo systemctl reload caddy`, and after a few seconds you should have a working instance of OpenMessaging with TLS/SSL!
