@@ -69,8 +69,8 @@ First, you want to install Caddy. Follow their docs for whatever OS you're using
 [https://caddyserver.com/docs/install](https://caddyserver.com/docs/install)
 
 Next, you want to modify the Caddyfile. You can either use a local Caddyfile, or the global one. I'll be using the global one.  
-On Debian-based systems, this is located at `/etc/caddy/Caddyfile`  
-This config will tell Caddy how to handle incoming requests  
+On Debian-based systems, this is located at `/etc/caddy/Caddyfile`. This config will tell Caddy how to handle incoming requests to your server.  
+
 Here is an example of the most basic config possible:
 ```py
 backend.example.site {
@@ -88,8 +88,8 @@ cdn.example.site {
   file_server
 }
 ```
-Make sure to change the paths and add the server port!
-Now, finally, go to the `script.js` file in the client folder, and change the domain on the first line to your backend domain.
-Ex. `let socket = io.connect('backend.example.site')`
+#### Make sure to change the paths and add the server port!
+
+Now, finally, go to the `script.js` file in the client folder, and change the domain on the first line to your backend domain. (Ex. `let socket = io.connect('backend.example.site')`)
 
 Once you've changed the config, run `sudo systemctl reload caddy`, and after a few seconds you should have a working instance of OpenMessaging with TLS/SSL!
