@@ -34,9 +34,7 @@ def save(data, location: str) -> None:
 def load(location: str):
   if r.get(location) == None:
     r.set(location, json.dumps({}))
-    return json.loads(r.get(location))
-  else:
-    return json.loads(r.get(location))
+  return json.loads(r.get(location))
 
 def load_room(room: str):
   room = load(load('rooms')[room])
@@ -527,15 +525,17 @@ async def amTyping(sid):
 # Takes a temp key given from a 2fa key and changes the password of the associated user
 @sio.event
 async def change_password(sid, key, password):
-  print(temp_pass_keys)
-  print(key)
   for keyb in temp_pass_keys:
     if keyb[1] == key:
       username = keyb[0]
       temp_pass_keys.pop(temp_pass_keys.index(keyb))
       userStore = load('userIndex')
       user_data = load(userStore[username])
-      user_data['password'] = password
+      password = password.encode('utf-8')
+      encrypt = bcrypt.hashpw(password, bcrypt.gensalt(10))
+      b64_encode = base64.b64encode(encrypt)
+      b64_string = b64_encode.decode('utf-8')
+      user_data['password'] = b64_string
       save(user_data, userStore[username])
       await sio.emit('statusCallback', {'popup': 'passwordSuccess', 'description': 'Successfully changed your password!'}, room=sid)
       return
@@ -546,13 +546,19 @@ async def change_password(sid, key, password):
 # Validates a user's provided 2fa key
 @sio.event
 async def validate_2fa(sid, key):
-  for secret in secretStore:
-    tempotp = pyotp.TOTP(secretStore[secret])
-    if tempotp.verify(key):
-      twokey = str(uuid.uuid4())
-      username = secret
-      temp_pass_keys.append([username, twokey])
-      await sio.emit('twoKey', {'key': twokey, 'status': 'success'}, room=sid)
+  username = await validate_sid(sid)
+  if not username:
+    return
+  users = load('userIndex')
+  try:
+    secret = load(users[username])['secret']
+  except KeyError:
+    await sio.emit('statusCallback', {'error': 'no2FA', 'description': 'Your account does not have a 2FA secret attached to it.'}, room=sid)
+  tempotp = pyotp.TOTP(secret)
+  if tempotp.verify(key):
+    twokey = str(uuid.uuid4())
+    temp_pass_keys.append([username, twokey])
+    await sio.emit('twoKey', {'key': twokey, 'status': 'success'}, room=sid)
   else:
     await sio.emit('twoKey', 'invalidkey', room=sid)
     return
@@ -564,16 +570,17 @@ async def enable_2fa(sid):
   if not username:
     return
   secret = pyotp.random_base32()
-  secretStore[username] = secret
-  with open('secret.store', 'wb') as secretStoreSave:
-    pickle.dump(secretStore, secretStoreSave)
-  
+  users = load('userIndex')
+  secretStore = load(users[username])
+  secretStore['secret'] = secret
+  save(secretStore, users[username])
   code = qrcode.make(pyotp.totp.TOTP(secret).provisioning_uri(name=f'{username}@openmessenger', issuer_name='OpenMessage'))
   code.save('tmp.png')
   with open('tmp.png', 'rb') as image:
     imaged = image.read()
     await sio.emit('sendQR', {'qrcode': str(base64.b64encode(imaged)).replace("b'", '').replace("'", ''), 'contains': '2fa'}, room=sid)
   image.close()
+  os.remove('tmp.png')
 
 # Checks if the user emitting this event has 2fa enabled
 @sio.event
@@ -581,12 +588,14 @@ async def has_2fa(sid):
   username = await validate_sid(sid)
   if not username:
     return
-  if username in secretStore:
+  users = load('userIndex')
+  if 'secret' in load(users[username]):
     await sio.emit('does2fa', True, room=sid)
   else:
     await sio.emit('does2fa', False, room=sid)
 
 # sends the message history to the given SID#, this is just a function for readability.
+# (i could really do this with other commonly-used lines)
 async def getHistory(sid, rm):
   await sio.emit('messageHistory', load_room(rm)['messages'], room=sid)
 

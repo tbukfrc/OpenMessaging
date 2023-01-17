@@ -846,6 +846,15 @@ window.onload = function() {
       })
     }
   HTMLDivElement.prototype.close = function() {this.style.display = 'none'};
-  HTMLDivElement.prototype.showModal = function() {this.style.display = 'block'};
+  HTMLDivElement.prototype.showModal = function() {
+    this.style.display = 'block'
+    let index = 0;
+    Array.from(document.getElementsByClassName('popupDiv')).forEach((ele) => {
+      if (ele.style.display == 'block') {
+        index += 1;
+      };
+    });
+    this.style.zIndex = 100 + index;
+  };
   continueLoading();
 }
