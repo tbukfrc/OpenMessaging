@@ -1,3 +1,5 @@
+# This project is no longer being maintained.
+
 # About
 
 Hello! This is my latest project, OpenMessage. It's an open-source messenger written in Python (server) and JavaScript (browser). A CLI client is in the works.
